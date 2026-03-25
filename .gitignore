@@ -1,0 +1,14 @@
+# Runtime / local state
+.omc/
+logs/
+data/*.db
+data/plugins/
+.env
+.env.*
+
+# Frontend local deps/build
+web/node_modules/
+web/dist/
+
+# OS / editor
+.DS_Store
