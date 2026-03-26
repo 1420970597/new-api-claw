@@ -89,6 +89,7 @@ import {
   SiGitlab,
   SiGoogle,
   SiKeycloak,
+  SiNextcloud,
   SiNotion,
   SiOkta,
   SiOpenid,
