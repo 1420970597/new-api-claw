@@ -89,7 +89,7 @@ import {
   SiGitlab,
   SiGoogle,
   SiKeycloak,
-  SiLinkedin,
+  SiLinkedIn,
   SiNextcloud,
   SiNotion,
   SiOkta,
@@ -119,6 +119,8 @@ export function getLucideIcon(key, selected = false) {
     case 'detail':
       return <LayoutDashboard {...commonProps} color={iconColor} />;
     case 'playground':
+      return <TerminalSquare {...commonProps} color={iconColor} />;
+    case 'claw':
       return <TerminalSquare {...commonProps} color={iconColor} />;
     case 'chat':
       return <MessageSquare {...commonProps} color={iconColor} />;
@@ -504,7 +506,7 @@ const oauthProviderIconMap = {
   google: SiGoogle,
   discord: SiDiscord,
   facebook: SiFacebook,
-  linkedin: SiLinkedin,
+  linkedin: SiLinkedIn,
   x: SiX,
   twitter: SiX,
   slack: SiSlack,
