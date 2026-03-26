@@ -59,10 +59,8 @@ func SetApiRouter(router *gin.Engine) {
 			clawRoute.GET("/bootstrap", controller.GetClawBootstrap)
 			clawRoute.GET("/profile", controller.GetClawProfile)
 			clawRoute.GET("/models", controller.GetClawModels)
-			clawRoute.GET("/api/v1/bootstrap", controller.GetClawBootstrap)
-			clawRoute.GET("/api/v1/profile", controller.GetClawProfile)
-			clawRoute.GET("/api/v1/models", controller.GetClawModels)
-			clawRoute.Any("/api/v1/*path", controller.ProxyClawBackend)
+			clawRoute.Any("/api/v1/:path", controller.ProxyClawBackend)
+			clawRoute.Any("/api/v1/:path/*subpath", controller.ProxyClawBackend)
 		}
 
 		userRoute := apiRouter.Group("/user")

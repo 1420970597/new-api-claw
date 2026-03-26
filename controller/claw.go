@@ -270,6 +270,13 @@ func GetClawBootstrap(c *gin.Context) {
 func ProxyClawBackend(c *gin.Context) {
 	userID := c.GetInt("id")
 	path := strings.TrimPrefix(c.Param("path"), "/")
+	if subpath := strings.TrimPrefix(c.Param("subpath"), "/"); subpath != "" {
+		if path != "" {
+			path += "/" + subpath
+		} else {
+			path = subpath
+		}
+	}
 	targetURL := "/api/v1"
 	if path != "" {
 		targetURL += "/" + path
