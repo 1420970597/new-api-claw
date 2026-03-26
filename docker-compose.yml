@@ -16,12 +16,15 @@ version: '3.4' # For compatibility with older Docker versions
 
 services:
   new-api:
-    image: calciumion/new-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: new-api-claw:local
     container_name: new-api
     restart: always
     command: --log-dir /app/logs
     ports:
-      - "3000:3000"
+      - "3005:3000"
     volumes:
       - ./data:/data
       - ./logs:/app/logs
@@ -29,6 +32,8 @@ services:
       - SQL_DSN=postgresql://root:123456@postgres:5432/new-api # ⚠️ IMPORTANT: Change the password in production!
 #      - SQL_DSN=root:123456@tcp(mysql:3306)/new-api  # Point to the mysql service, uncomment if using MySQL
       - REDIS_CONN_STRING=redis://redis
+      - POCO_CLAW_FRONTEND_URL=http://host.docker.internal:3211
+      - POCO_CLAW_BACKEND_URL=http://host.docker.internal:18000
       - TZ=Asia/Shanghai
       - ERROR_LOG_ENABLED=true # 是否启用错误日志记录 (Whether to enable error log recording)
       - BATCH_UPDATE_ENABLED=true  # 是否启用批量更新 (Whether to enable batch update)
@@ -43,6 +48,8 @@ services:
       - redis
       - postgres
 #      - mysql  # Uncomment if using MySQL
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - new-api-network
     healthcheck:
@@ -53,14 +60,14 @@ services:
 
   redis:
     image: redis:latest
-    container_name: redis
+    container_name: new-api-redis
     restart: always
     networks:
       - new-api-network
 
   postgres:
     image: postgres:15
-    container_name: postgres
+    container_name: new-api-postgres
     restart: always
     environment:
       POSTGRES_USER: root

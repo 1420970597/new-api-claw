@@ -24,20 +24,6 @@ import { API } from '../../helpers';
 const CLAW_LOAD_TIMEOUT_MS = 12000;
 const CLAW_API_BASE = '/api/claw';
 
-const persistClawAccessToken = (accessToken) => {
-  if (typeof accessToken !== 'string' || accessToken.trim() === '') {
-    return;
-  }
-  try {
-    window.localStorage.setItem('access_token', accessToken);
-    window.localStorage.setItem('new_api_access_token', accessToken);
-  } catch (e) {}
-  try {
-    const secure = window.location.protocol === 'https:' ? '; Secure' : '';
-    document.cookie = `access_token=${encodeURIComponent(accessToken)}; Path=/; SameSite=Strict${secure}`;
-  } catch (e) {}
-};
-
 const resolveClawApiBase = (bootstrapData = {}) => {
   const candidates = [
     bootstrapData.api_base,
@@ -95,10 +81,24 @@ const buildClawBootstrapContext = (bootstrapData = {}) => {
   };
 };
 
+const persistBootstrapToken = (context) => {
+  if (!context?.accessToken) {
+    return;
+  }
+  try {
+    window.localStorage.setItem('access_token', context.accessToken);
+  } catch (e) {}
+  try {
+    const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = `access_token=${encodeURIComponent(context.accessToken)}; Path=/; SameSite=Lax${secure}`;
+  } catch (e) {}
+};
+
 const Claw = () => {
   const [phase, setPhase] = useState('loading');
   const [errorReason, setErrorReason] = useState('timeout');
   const [reloadKey, setReloadKey] = useState(0);
+  const [bootstrapContext, setBootstrapContext] = useState(null);
   const iframeRef = useRef(null);
   const bootstrapCacheRef = useRef(null);
   const bootstrapRequestRef = useRef(null);
@@ -121,6 +121,7 @@ const Claw = () => {
       .then((res) => {
         const context = buildClawBootstrapContext(res?.data?.data || {});
         bootstrapCacheRef.current = context;
+        persistBootstrapToken(context);
         return context;
       })
       .catch(() => {
@@ -140,7 +141,8 @@ const Claw = () => {
       if (!iframeElement || !iframeElement.contentWindow) return;
 
       const frameWindow = iframeElement.contentWindow;
-      const context = await loadBootstrap();
+      const context = bootstrapContext || (await loadBootstrap());
+      persistBootstrapToken(context);
 
       try {
         frameWindow.__NEW_API_API_BASE__ = context.apiBase || CLAW_API_BASE;
@@ -157,35 +159,47 @@ const Claw = () => {
         return;
       }
 
-      persistClawAccessToken(context.accessToken);
-
       try {
         const canAccessIframeStorage =
           frameWindow.location?.origin === window.location.origin;
         if (canAccessIframeStorage) {
           frameWindow.localStorage.setItem('access_token', context.accessToken);
-          frameWindow.localStorage.setItem(
-            'new_api_access_token',
-            context.accessToken,
-          );
         }
       } catch (e) {}
     },
-    [loadBootstrap],
+    [bootstrapContext, loadBootstrap],
   );
 
   useEffect(() => {
-    if (phase !== 'loading') return;
+    let mounted = true;
+    setPhase('loading');
+    setErrorReason('timeout');
+    setBootstrapContext(null);
+
+    void loadBootstrap()
+      .then((context) => {
+        if (!mounted) return;
+        setBootstrapContext(context);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setErrorReason('load_error');
+        setPhase('error');
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [loadBootstrap, reloadKey]);
+
+  useEffect(() => {
+    if (phase !== 'loading' || !bootstrapContext) return;
     const timer = window.setTimeout(() => {
       setErrorReason('timeout');
       setPhase('error');
     }, CLAW_LOAD_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
-  }, [phase, reloadKey]);
-
-  useEffect(() => {
-    void loadBootstrap();
-  }, [loadBootstrap, reloadKey]);
+  }, [phase, bootstrapContext, reloadKey]);
 
   useEffect(() => {
     if (phase !== 'ready') return;
@@ -195,6 +209,7 @@ const Claw = () => {
   const handleRetry = useCallback(() => {
     bootstrapCacheRef.current = null;
     bootstrapRequestRef.current = null;
+    setBootstrapContext(null);
     setErrorReason('timeout');
     setPhase('loading');
     setReloadKey((prev) => prev + 1);
@@ -247,24 +262,26 @@ const Claw = () => {
           </div>
         )}
 
-        <iframe
-          ref={iframeRef}
-          key={reloadKey}
-          src={iframeSrc}
-          title='Claw'
-          data-api-base={CLAW_API_BASE}
-          onLoad={handleLoad}
-          onError={handleError}
-          style={{
-            width: '100%',
-            height: '100%',
-            border: 'none',
-            background: 'var(--semi-color-bg-0)',
-            borderRadius: '12px',
-            opacity: phase === 'ready' ? 1 : 0,
-            transition: 'opacity 0.2s ease',
-          }}
-        />
+        {bootstrapContext && !hasError && (
+          <iframe
+            ref={iframeRef}
+            key={reloadKey}
+            src={iframeSrc}
+            title='Claw'
+            data-api-base={bootstrapContext.apiBase || CLAW_API_BASE}
+            onLoad={handleLoad}
+            onError={handleError}
+            style={{
+              width: '100%',
+              height: '100%',
+              border: 'none',
+              background: 'var(--semi-color-bg-0)',
+              borderRadius: '12px',
+              opacity: phase === 'ready' ? 1 : 0,
+              transition: 'opacity 0.2s ease',
+            }}
+          />
+        )}
       </div>
     </div>
   );

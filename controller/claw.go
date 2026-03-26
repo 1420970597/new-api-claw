@@ -1,8 +1,11 @@
 package controller
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -27,10 +30,34 @@ type clawProfileData struct {
 	RequestCount int    `json:"request_count"`
 }
 
+type clawModelVendor struct {
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Icon        string `json:"icon,omitempty"`
+}
+
+type clawModelEndpointDefinition struct {
+	Path   string `json:"path"`
+	Method string `json:"method"`
+}
+
+type clawModelMetadata struct {
+	ModelName              string                                 `json:"model_name"`
+	Description            string                                 `json:"description,omitempty"`
+	Icon                   string                                 `json:"icon,omitempty"`
+	Tags                   []string                               `json:"tags,omitempty"`
+	VendorID               int                                    `json:"vendor_id,omitempty"`
+	Vendor                 *clawModelVendor                       `json:"vendor,omitempty"`
+	SupportedEndpointTypes []constant.EndpointType                `json:"supported_endpoint_types,omitempty"`
+	EndpointDefinitions    map[string]clawModelEndpointDefinition `json:"endpoint_definitions,omitempty"`
+}
+
 type clawModelConfig struct {
-	DefaultModel string   `json:"default_model"`
-	ModelList    []string `json:"model_list"`
-	Mem0Enabled  bool     `json:"mem0_enabled"`
+	DefaultModel string              `json:"default_model"`
+	ModelList    []string            `json:"model_list"`
+	Models       []clawModelMetadata `json:"models"`
+	Mem0Enabled  bool                `json:"mem0_enabled"`
 }
 
 type clawBootstrapData struct {
@@ -48,6 +75,101 @@ type clawBootstrapData struct {
 	HasAccessToken bool            `json:"has_access_token"`
 }
 
+type clawUpstreamModelsResponse struct {
+	Success bool            `json:"success"`
+	Code    int             `json:"code"`
+	Data    json.RawMessage `json:"data"`
+}
+
+type clawUpstreamModelItem struct {
+	ID string `json:"id"`
+}
+
+type clawUpstreamModelsPayload struct {
+	ModelList []string `json:"model_list"`
+}
+
+var clawAllowedProxyResources = map[string]struct{}{
+	"attachments":         {},
+	"callback":            {},
+	"claude-md":           {},
+	"env-vars":            {},
+	"health":              {},
+	"mcp-installs":        {},
+	"mcp-servers":         {},
+	"memories":            {},
+	"messages":            {},
+	"models":              {},
+	"plugin-installs":     {},
+	"plugins":             {},
+	"projects":            {},
+	"runs":                {},
+	"scheduled-tasks":     {},
+	"search":              {},
+	"sessions":            {},
+	"skill-installs":      {},
+	"skills":              {},
+	"slash-commands":      {},
+	"subagents":           {},
+	"tasks":               {},
+	"tool-executions":     {},
+	"usage":               {},
+	"user-input-requests": {},
+}
+
+var clawForwardRequestHeaders = []string{
+	"Accept",
+	"Accept-Encoding",
+	"Accept-Language",
+	"Cache-Control",
+	"Content-Type",
+	"If-Modified-Since",
+	"If-None-Match",
+	"Range",
+	"User-Agent",
+	"X-Request-Id",
+}
+
+var clawForwardResponseHeaders = []string{
+	"Cache-Control",
+	"Content-Disposition",
+	"Content-Encoding",
+	"Content-Length",
+	"Content-Type",
+	"ETag",
+	"Last-Modified",
+	"X-Accel-Buffering",
+	"X-Request-Id",
+}
+
+func normalizeClawProxyPath(path string) string {
+	return strings.Trim(strings.TrimSpace(path), "/")
+}
+
+func isAllowedClawProxyPath(path string) bool {
+	normalizedPath := normalizeClawProxyPath(path)
+	if normalizedPath == "" {
+		return false
+	}
+
+	resource := normalizedPath
+	if idx := strings.IndexByte(normalizedPath, '/'); idx >= 0 {
+		resource = normalizedPath[:idx]
+	}
+
+	_, allowed := clawAllowedProxyResources[resource]
+	return allowed
+}
+
+func copyAllowedHeaders(src http.Header, dst http.Header, allowedKeys []string) {
+	for _, key := range allowedKeys {
+		values := src.Values(key)
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
 func getClawBackendBaseURL() string {
 	baseURL := strings.TrimSpace(os.Getenv("POCO_CLAW_BACKEND_URL"))
 	if baseURL == "" {
@@ -56,7 +178,144 @@ func getClawBackendBaseURL() string {
 	return strings.TrimSuffix(baseURL, "/")
 }
 
+func parseClawUpstreamModelNames(data json.RawMessage) []string {
+	if len(data) == 0 || strings.TrimSpace(string(data)) == "" || strings.TrimSpace(string(data)) == "null" {
+		return nil
+	}
+
+	resultSet := make(map[string]struct{})
+	appendName := func(name string) {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			return
+		}
+		resultSet[trimmed] = struct{}{}
+	}
+
+	var payload clawUpstreamModelsPayload
+	if err := common.Unmarshal(data, &payload); err == nil {
+		for _, name := range payload.ModelList {
+			appendName(name)
+		}
+	}
+
+	var items []clawUpstreamModelItem
+	if err := common.Unmarshal(data, &items); err == nil {
+		for _, item := range items {
+			appendName(item.ID)
+		}
+	}
+
+	var names []string
+	if err := common.Unmarshal(data, &names); err == nil {
+		for _, name := range names {
+			appendName(name)
+		}
+	}
+
+	models := make([]string, 0, len(resultSet))
+	for name := range resultSet {
+		models = append(models, name)
+	}
+	return models
+}
+
+func getClawUserGroup(c *gin.Context, userID int) (string, error) {
+	group := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
+	if strings.TrimSpace(group) != "" {
+		return group, nil
+	}
+	return model.GetUserGroup(userID, false)
+}
+
+func getClawUpstreamModels(c *gin.Context, userID int) ([]string, error) {
+	group, err := getClawUserGroup(c, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	groups := make([]string, 0, 4)
+	if group == "auto" {
+		userCache, err := model.GetUserCache(userID)
+		if err != nil {
+			return nil, err
+		}
+		for _, autoGroup := range service.GetUserAutoGroup(userCache.Group) {
+			autoGroup = strings.TrimSpace(autoGroup)
+			if autoGroup == "" {
+				continue
+			}
+			groups = append(groups, autoGroup)
+		}
+	} else if strings.TrimSpace(group) != "" {
+		groups = append(groups, strings.TrimSpace(group))
+	}
+
+	requestURLs := make([]string, 0, len(groups)+1)
+	for _, g := range groups {
+		requestURLs = append(requestURLs, fmt.Sprintf("%s/api/v1/models?group=%s", getClawBackendBaseURL(), url.QueryEscape(g)))
+	}
+	requestURLs = append(requestURLs, fmt.Sprintf("%s/api/v1/models", getClawBackendBaseURL()))
+
+	client := service.GetHttpClient()
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	modelSet := make(map[string]struct{})
+	successCount := 0
+	for _, backendURL := range requestURLs {
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, backendURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("X-User-Id", common.Interface2String(userID))
+
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			resp.Body.Close()
+			continue
+		}
+
+		var upstream clawUpstreamModelsResponse
+		if err = common.DecodeJson(resp.Body, &upstream); err != nil {
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+		successCount++
+
+		for _, name := range parseClawUpstreamModelNames(upstream.Data) {
+			if endpointTypes := model.GetModelSupportEndpointTypes(name); len(endpointTypes) > 0 && !supportsClawChat(endpointTypes) {
+				continue
+			}
+			modelSet[name] = struct{}{}
+		}
+	}
+
+	if successCount == 0 {
+		return nil, fmt.Errorf("failed to fetch claw upstream models")
+	}
+	if len(modelSet) == 0 {
+		return nil, fmt.Errorf("claw upstream models are empty")
+	}
+
+	models := make([]string, 0, len(modelSet))
+	for name := range modelSet {
+		models = append(models, name)
+	}
+	sort.Strings(models)
+	return models, nil
+}
+
 func listClawUserModels(c *gin.Context, userID int) ([]string, error) {
+	upstreamModels, upstreamErr := getClawUpstreamModels(c, userID)
+	if upstreamErr == nil {
+		return upstreamModels, nil
+	}
 	userCache, err := model.GetUserCache(userID)
 	if err != nil {
 		return nil, err
@@ -145,6 +404,113 @@ func pickClawDefaultModel(models []string) string {
 	return models[0]
 }
 
+func parseClawModelTags(rawTags string) []string {
+	normalized := strings.NewReplacer(",", ",", "，", ",", ";", ",", "；", ",", "|", ",", "\n", ",", "\t", ",").Replace(rawTags)
+	parts := strings.Split(normalized, ",")
+	if len(parts) == 0 {
+		return nil
+	}
+	tags := make([]string, 0, len(parts))
+	tagSet := make(map[string]struct{})
+	for _, part := range parts {
+		tag := strings.TrimSpace(part)
+		if tag == "" {
+			continue
+		}
+		if _, exists := tagSet[tag]; exists {
+			continue
+		}
+		tagSet[tag] = struct{}{}
+		tags = append(tags, tag)
+	}
+	if len(tags) == 0 {
+		return nil
+	}
+	return tags
+}
+
+func buildClawModelMetadata(modelList []string) []clawModelMetadata {
+	if len(modelList) == 0 {
+		return make([]clawModelMetadata, 0)
+	}
+
+	pricingList := model.GetPricing()
+	pricingByModel := make(map[string]model.Pricing, len(pricingList))
+	for _, pricing := range pricingList {
+		pricingByModel[pricing.ModelName] = pricing
+	}
+
+	vendorMap := make(map[int]clawModelVendor)
+	for _, vendor := range model.GetVendors() {
+		vendorMap[vendor.ID] = clawModelVendor{
+			ID:          vendor.ID,
+			Name:        vendor.Name,
+			Description: vendor.Description,
+			Icon:        vendor.Icon,
+		}
+	}
+
+	supportedEndpointMap := model.GetSupportedEndpointMap()
+	metadataList := make([]clawModelMetadata, 0, len(modelList))
+	for _, modelName := range modelList {
+		metadata := clawModelMetadata{
+			ModelName: modelName,
+		}
+
+		if pricing, ok := pricingByModel[modelName]; ok {
+			metadata.Description = strings.TrimSpace(pricing.Description)
+			metadata.Icon = strings.TrimSpace(pricing.Icon)
+			metadata.Tags = parseClawModelTags(pricing.Tags)
+			metadata.VendorID = pricing.VendorID
+			if len(pricing.SupportedEndpointTypes) > 0 {
+				metadata.SupportedEndpointTypes = append(metadata.SupportedEndpointTypes, pricing.SupportedEndpointTypes...)
+			}
+		}
+
+		if len(metadata.SupportedEndpointTypes) == 0 {
+			endpointTypes := model.GetModelSupportEndpointTypes(modelName)
+			if len(endpointTypes) > 0 {
+				metadata.SupportedEndpointTypes = append(metadata.SupportedEndpointTypes, endpointTypes...)
+			}
+		}
+
+		if metadata.VendorID > 0 {
+			if vendor, ok := vendorMap[metadata.VendorID]; ok {
+				vendorCopy := vendor
+				metadata.Vendor = &vendorCopy
+			}
+		}
+
+		if len(metadata.SupportedEndpointTypes) > 0 {
+			endpointDefinitions := make(map[string]clawModelEndpointDefinition)
+			for _, endpointType := range metadata.SupportedEndpointTypes {
+				endpointKey := string(endpointType)
+				endpointInfo, ok := supportedEndpointMap[endpointKey]
+				if !ok {
+					if defaultInfo, exists := common.GetDefaultEndpointInfo(endpointType); exists {
+						endpointInfo = defaultInfo
+						ok = true
+					}
+				}
+				if !ok {
+					continue
+				}
+				endpointDefinitions[endpointKey] = clawModelEndpointDefinition{
+					Path:   endpointInfo.Path,
+					Method: endpointInfo.Method,
+				}
+			}
+			if len(endpointDefinitions) > 0 {
+				metadata.EndpointDefinitions = endpointDefinitions
+			}
+		}
+
+		metadataList = append(metadataList, metadata)
+	}
+
+	return metadataList
+}
+
 func getClawProfileData(userID int) (clawProfileData, error) {
 	user, err := model.GetUserById(userID, true)
 	if err != nil {
@@ -194,6 +560,7 @@ func getClawModelConfig(c *gin.Context, userID int) (clawModelConfig, error) {
 	return clawModelConfig{
 		DefaultModel: pickClawDefaultModel(models),
 		ModelList:    models,
+		Models:       buildClawModelMetadata(models),
 		Mem0Enabled:  false,
 	}, nil
 }
@@ -269,18 +636,24 @@ func GetClawBootstrap(c *gin.Context) {
 
 func ProxyClawBackend(c *gin.Context) {
 	userID := c.GetInt("id")
-	path := strings.TrimPrefix(c.Param("path"), "/")
-	if subpath := strings.TrimPrefix(c.Param("subpath"), "/"); subpath != "" {
+	path := normalizeClawProxyPath(c.Param("path"))
+	if subpath := normalizeClawProxyPath(c.Param("subpath")); subpath != "" {
 		if path != "" {
 			path += "/" + subpath
 		} else {
 			path = subpath
 		}
 	}
-	targetURL := "/api/v1"
-	if path != "" {
-		targetURL += "/" + path
+
+	if !isAllowedClawProxyPath(path) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "claw proxy path is not allowed",
+		})
+		return
 	}
+
+	targetURL := "/api/v1/" + path
 	backendURL := getClawBackendBaseURL() + targetURL
 	if rawQuery := c.Request.URL.RawQuery; rawQuery != "" {
 		backendURL += "?" + rawQuery
@@ -291,16 +664,7 @@ func ProxyClawBackend(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	for key, values := range c.Request.Header {
-		for _, value := range values {
-			req.Header.Add(key, value)
-		}
-	}
-	req.Header.Del("Host")
-	req.Header.Del("Content-Length")
-	req.Header.Del("Authorization")
-	req.Header.Del("Cookie")
-	req.Header.Del("New-Api-User")
+	copyAllowedHeaders(c.Request.Header, req.Header, clawForwardRequestHeaders)
 	req.Header.Set("X-User-Id", common.Interface2String(userID))
 	if req.Header.Get("X-Forwarded-Proto") == "" {
 		if c.Request.TLS != nil {
@@ -330,11 +694,7 @@ func ProxyClawBackend(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	for key, values := range resp.Header {
-		for _, value := range values {
-			c.Writer.Header().Add(key, value)
-		}
-	}
+	copyAllowedHeaders(resp.Header, c.Writer.Header(), clawForwardResponseHeaders)
 	c.Status(resp.StatusCode)
 	_, _ = io.Copy(c.Writer, resp.Body)
 }

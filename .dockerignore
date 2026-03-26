@@ -1,0 +1,22 @@
+# git
+.git
+.gitignore
+
+# local state
+.omc
+.claude
+memory
+logs
+
+# runtime data
+data
+
+# frontend artifacts and deps
+web/node_modules
+web/dist
+web/web
+
+# misc
+*.log
+*.tmp
+*.swp
