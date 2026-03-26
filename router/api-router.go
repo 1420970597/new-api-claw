@@ -53,6 +53,18 @@ func SetApiRouter(router *gin.Engine) {
 		// Universal secure verification routes
 		apiRouter.POST("/verify", middleware.UserAuth(), middleware.CriticalRateLimit(), controller.UniversalVerify)
 
+		clawRoute := apiRouter.Group("/claw")
+		clawRoute.Use(middleware.TokenOrUserAuth())
+		{
+			clawRoute.GET("/bootstrap", controller.GetClawBootstrap)
+			clawRoute.GET("/profile", controller.GetClawProfile)
+			clawRoute.GET("/models", controller.GetClawModels)
+			clawRoute.GET("/api/v1/bootstrap", controller.GetClawBootstrap)
+			clawRoute.GET("/api/v1/profile", controller.GetClawProfile)
+			clawRoute.GET("/api/v1/models", controller.GetClawModels)
+			clawRoute.Any("/api/v1/*path", controller.ProxyClawBackend)
+		}
+
 		userRoute := apiRouter.Group("/user")
 		{
 			userRoute.POST("/register", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.Register)

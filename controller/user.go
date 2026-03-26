@@ -281,6 +281,33 @@ func GetUser(c *gin.Context) {
 	return
 }
 
+func generateUserAccessToken(user *model.User) (string, error) {
+	for i := 0; i < 3; i++ {
+		randI := common.GetRandomInt(4)
+		key, err := common.GenerateRandomKey(29 + randI)
+		if err != nil {
+			return "", err
+		}
+		var existing model.User
+		if model.DB.Where("access_token = ?", key).First(&existing).RowsAffected != 0 {
+			continue
+		}
+		user.SetAccessToken(key)
+		if err := user.Update(false); err != nil {
+			return "", err
+		}
+		return key, nil
+	}
+	return "", errors.New("failed to generate access token")
+}
+
+func ensureUserAccessToken(user *model.User) (string, error) {
+	if token := strings.TrimSpace(user.GetAccessToken()); token != "" {
+		return token, nil
+	}
+	return generateUserAccessToken(user)
+}
+
 func GenerateAccessToken(c *gin.Context) {
 	id := c.GetInt("id")
 	user, err := model.GetUserById(id, true)
@@ -288,22 +315,8 @@ func GenerateAccessToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	// get rand int 28-32
-	randI := common.GetRandomInt(4)
-	key, err := common.GenerateRandomKey(29 + randI)
+	accessToken, err := generateUserAccessToken(user)
 	if err != nil {
-		common.ApiErrorI18n(c, i18n.MsgGenerateFailed)
-		common.SysLog("failed to generate key: " + err.Error())
-		return
-	}
-	user.SetAccessToken(key)
-
-	if model.DB.Where("access_token = ?", user.AccessToken).First(user).RowsAffected != 0 {
-		common.ApiErrorI18n(c, i18n.MsgUuidDuplicate)
-		return
-	}
-
-	if err := user.Update(false); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -311,7 +324,7 @@ func GenerateAccessToken(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    user.AccessToken,
+		"data":    accessToken,
 	})
 	return
 }
@@ -462,6 +475,7 @@ func generateDefaultSidebarConfig(userRole int) string {
 	defaultConfig["console"] = map[string]interface{}{
 		"enabled":    true,
 		"detail":     true,
+		"claw":       true,
 		"token":      true,
 		"log":        true,
 		"midjourney": true,
@@ -479,22 +493,26 @@ func generateDefaultSidebarConfig(userRole int) string {
 	if userRole == common.RoleAdminUser {
 		// 管理员可以访问管理员区域，但不能访问系统设置
 		defaultConfig["admin"] = map[string]interface{}{
-			"enabled":    true,
-			"channel":    true,
-			"models":     true,
-			"redemption": true,
-			"user":       true,
-			"setting":    false, // 管理员不能访问系统设置
+			"enabled":      true,
+			"channel":      true,
+			"models":       true,
+			"deployment":   true,
+			"subscription": true,
+			"redemption":   true,
+			"user":         true,
+			"setting":      false, // 管理员不能访问系统设置
 		}
 	} else if userRole == common.RoleRootUser {
 		// 超级管理员可以访问所有功能
 		defaultConfig["admin"] = map[string]interface{}{
-			"enabled":    true,
-			"channel":    true,
-			"models":     true,
-			"redemption": true,
-			"user":       true,
-			"setting":    true,
+			"enabled":      true,
+			"channel":      true,
+			"models":       true,
+			"deployment":   true,
+			"subscription": true,
+			"redemption":   true,
+			"user":         true,
+			"setting":      true,
 		}
 	}
 	// 普通用户不包含admin区域
